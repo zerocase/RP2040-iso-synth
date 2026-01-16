@@ -89,6 +89,15 @@ typedef enum {
   PRESET_9,
 } control_message_t;
 
+typedef enum {
+    VOWEL_A,
+    VOWEL_E,
+    VOWEL_I,
+    VOWEL_O,
+    VOWEL_U,
+    VOWEL_NONE
+} vowel_t;
+
 typedef int32_t Q28; // Signed fixed-point number with 28-bit fractional part
 typedef int16_t Q14; // Signed fixed-point number with 14-bit fractional part
 

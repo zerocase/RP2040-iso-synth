@@ -22,6 +22,8 @@
 #include "pico_synth_ex_presets.h"
 #include "pico_synth_ex_tables.h"
 #include "sound_i2s.h"
+#include "pico_synth_bp.h"
+#include "pico_synth_bp_table.h" // already included inside pico_synth_bp.h
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,6 +34,7 @@ static volatile uint8_t Osc_waveform = 0; // waveform setting value
 static volatile int8_t Osc_2_coarse_pitch = +0; // oscillator 2 coarse pitch setting value
 static volatile int8_t Osc_2_fine_pitch = +4; // oscillator 2 fine pitch setting value
 static volatile uint8_t Osc_1_2_mix = 16; // oscillator mix setting
+
 
 static inline Q28 Osc_phase_to_audio(uint32_t phase, uint8_t pitch) {
   Q14* wave_table = Osc_wave_tables[Osc_waveform][(pitch + 3) >> 2];
@@ -236,14 +239,72 @@ static volatile uint8_t gate_voice[4]; // gate control value (per voice)
 static volatile uint8_t pitch_voice[4]; // pitch control value (per voice)
 static volatile int8_t Octave_shift; // key octave shift amount
 
-static inline Q28 process_voice(uint8_t id) {
-  Q14 lfo_out    = LFO_process(id);
-  Q14 eg_out     = EG_process(id, gate_voice[id]);
-  Q28 osc_out    = Osc_process(id, pitch_voice[id] << 8, lfo_out);
-  Q28 filter_out = Filter_process(id, osc_out, eg_out);
-  Q28 amp_out    = Amp_process(id, filter_out, eg_out);
-  return amp_out;
+
+//////// filter (dual-peak) ///////////////////////////
+BiquadBPF BPF_voice1[4]; // first peak per voice
+BiquadBPF BPF_voice2[4]; // second peak per voice
+
+
+
+static volatile vowel_t CurrentVowel = VOWEL_E;  // always "A"
+// Approximate second peak offsets for vowels (tweakable)
+static const int8_t VowelPeakOffsets[5] = {
+    12, // A
+    22, // E
+    28, // I
+    18, // O
+    25  // U
+};
+
+
+void set_vowel(vowel_t vowel) {
+    CurrentVowel = vowel;
 }
+
+static inline Q28 process_voice(uint8_t id) {
+    // --- LFO and EG outputs ---
+    Q14 lfo_out = LFO_process(id);
+    Q14 eg_out  = EG_process(id, gate_voice[id]);
+
+    // --- Oscillator output ---
+    Q28 osc_out = Osc_process(id, pitch_voice[id] << 8, lfo_out);
+
+    // --- Bandpass filter (precomputed table, dual-peak) ---
+    int bp_index = (Filter_cutoff * 127) / 120;
+
+    // Optional: LFO mod for sweeping
+    int16_t lfo_mod = (lfo_out * 127) >> 14;
+    int16_t bp_index1 = bp_index + lfo_mod;
+    if(bp_index1 < 0)   bp_index1 = 0;
+    if(bp_index1 > 127) bp_index1 = 127;
+
+    // --- Set second peak based on vowel selection ---
+    int16_t peak_offset = 16; // default offset if no vowel selected
+    if(CurrentVowel != VOWEL_NONE) {
+        peak_offset = VowelPeakOffsets[CurrentVowel];
+    }
+
+    int16_t bp_index2 = bp_index1 + peak_offset;
+    if(bp_index2 < 0)   bp_index2 = 0;
+    if(bp_index2 > 127) bp_index2 = 127;
+
+    // Assign coefficients to BPF instances
+    BPF_set_from_table(&BPF_voice1[id], bp_index1);
+    BPF_set_from_table(&BPF_voice2[id], bp_index2);
+
+    // Process each filter
+    Q28 y1 = BPF_process(&BPF_voice1[id], osc_out);
+    Q28 y2 = BPF_process(&BPF_voice2[id], osc_out);
+
+    // Combine the two peaks (simple averaging)
+    Q28 bp_out = (y1 + y2) >> 1;
+
+    // --- Amplifier ---
+    Q28 amp_out = Amp_process(id, bp_out, eg_out);
+
+    return amp_out;
+}
+
 
 static void pwm_irq_handler() {
   pwm_clear_irq(PWMA_L_SLICE);

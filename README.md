@@ -1,4 +1,4 @@
-# RP2040-pico_synth_ex
+# RP2040-iso-synth
 ## Polyphonic synth engine for Raspberry Pi Pico, with envelope, filter and LFO
 
 This repository contains my adaptation of the great little software synthesizer [pico_synth_ex](https://github.com/risgk/pico_synth_ex) by Ryo Ishigaki (ISGK Instruments).
