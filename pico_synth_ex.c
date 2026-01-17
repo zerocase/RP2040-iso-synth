@@ -262,45 +262,18 @@ void set_vowel(vowel_t vowel) {
 }
 
 static inline Q28 process_voice(uint8_t id) {
-    // --- LFO and EG outputs ---
+    // LFO + EG
     Q14 lfo_out = LFO_process(id);
     Q14 eg_out  = EG_process(id, gate_voice[id]);
 
-    // --- Oscillator output ---
+    // Oscillator
     Q28 osc_out = Osc_process(id, pitch_voice[id] << 8, lfo_out);
 
-    // --- Bandpass filter (precomputed table, dual-peak) ---
-    int bp_index = (Filter_cutoff * 127) / 120;
+    // ---- LOWPASS FILTER (original) ----
+    Q28 lp_out = Filter_process(id, osc_out, lfo_out);
 
-    // Optional: LFO mod for sweeping
-    int16_t lfo_mod = (lfo_out * 127) >> 14;
-    int16_t bp_index1 = bp_index + lfo_mod;
-    if(bp_index1 < 0)   bp_index1 = 0;
-    if(bp_index1 > 127) bp_index1 = 127;
-
-    // --- Set second peak based on vowel selection ---
-    int16_t peak_offset = 16; // default offset if no vowel selected
-    if(CurrentVowel != VOWEL_NONE) {
-        peak_offset = VowelPeakOffsets[CurrentVowel];
-    }
-
-    int16_t bp_index2 = bp_index1 + peak_offset;
-    if(bp_index2 < 0)   bp_index2 = 0;
-    if(bp_index2 > 127) bp_index2 = 127;
-
-    // Assign coefficients to BPF instances
-    BPF_set_from_table(&BPF_voice1[id], bp_index1);
-    BPF_set_from_table(&BPF_voice2[id], bp_index2);
-
-    // Process each filter
-    Q28 y1 = BPF_process(&BPF_voice1[id], osc_out);
-    Q28 y2 = BPF_process(&BPF_voice2[id], osc_out);
-
-    // Combine the two peaks (simple averaging)
-    Q28 bp_out = (y1 + y2) >> 1;
-
-    // --- Amplifier ---
-    Q28 amp_out = Amp_process(id, bp_out, eg_out);
+    // Amplifier
+    Q28 amp_out = Amp_process(id, lp_out, eg_out);
 
     return amp_out;
 }
@@ -452,6 +425,24 @@ void set_parameter(synth_parameter_t parameter, int8_t value){
     case LFO_DEPTH:          if (value >=  0 && value <= 64)  { LFO_depth = value;          } break;
     case LFO_RATE:           if (value >=  0 && value <= 64)  { LFO_rate = value;           } break;
   }
+}
+
+int8_t get_parameter(synth_parameter_t parameter) {
+    switch(parameter) {
+        case OCTAVE_SHIFT:       return Octave_shift;
+        case OSC_WAVEFORM:       return Osc_waveform;
+        case OSC_2_COARSE_PITCH: return Osc_2_coarse_pitch;
+        case OSC_2_FINE_PITCH:   return Osc_2_fine_pitch;
+        case OSC_1_2_MIX:        return Osc_1_2_mix;
+        case EG_SUSTAIN_LEVEL:   return EG_sustain_level;
+        case EG_DECAY_TIME:      return EG_decay_time;
+        case FILTER_CUTOFF:      return Filter_cutoff;
+        case FILTER_RESONANCE:   return Filter_resonance;
+        case FILTER_MOD_AMOUNT:  return Filter_mod_amount;
+        case LFO_DEPTH:          return LFO_depth;
+        case LFO_RATE:           return LFO_rate;
+        default:                 return 0;
+    }
 }
 
 void print_status(){

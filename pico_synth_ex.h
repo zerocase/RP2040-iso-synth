@@ -135,6 +135,7 @@ static void load_factory_preset(uint8_t preset);
 void load_preset(Preset_t preset);
 void control_message(control_message_t message);
 void set_parameter(synth_parameter_t parameter, int8_t value);
+int8_t get_parameter(synth_parameter_t parameter);
 void print_status();
 
 #ifdef __cplusplus
