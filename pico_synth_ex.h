@@ -89,6 +89,8 @@ typedef enum {
   PRESET_9,
 } control_message_t;
 
+#ifndef VOWEL_T_DEFINED
+#define VOWEL_T_DEFINED
 typedef enum {
     VOWEL_A,
     VOWEL_E,
@@ -97,6 +99,7 @@ typedef enum {
     VOWEL_U,
     VOWEL_NONE
 } vowel_t;
+#endif
 
 typedef int32_t Q28; // Signed fixed-point number with 28-bit fractional part
 typedef int16_t Q14; // Signed fixed-point number with 14-bit fractional part
@@ -122,9 +125,10 @@ bool i2s_timer_callback(repeating_timer_t *timer);
 
 static void pwm_irq_handler();
 void PWMA_init(int8_t pwm_gpio_r, int8_t pwm_gpio_l);
-static inline void PWMA_process(Q28 audio_in);
+static inline void PWMA_process(Q28 audio_l, Q28 audio_r);
 static inline Q28 process_voice(uint8_t id);
 static void pwm_irq_handler();
+void set_vowel(vowel_t vowel);
 void note_toggle(uint8_t key);
 void all_notes_off();
 void note_on(uint8_t key);

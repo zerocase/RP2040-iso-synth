@@ -222,11 +222,13 @@ void PWMA_init(int8_t pwm_gpio_r, int8_t pwm_gpio_l) {
   if(PWMA_L_GPIO > -1) pwm_set_enabled(PWMA_L_SLICE, true);
 }
 
-static inline void PWMA_process(Q28 audio_in) {
-  int32_t level_int32 = (audio_in >> 18) + (PWMA_CYCLE / 2);
-  uint16_t level = (level_int32 > 0) * level_int32;
-  if(PWMA_R_GPIO > -1) pwm_set_chan_level(PWMA_R_SLICE, PWMA_R_CHAN, level);
-  if(PWMA_L_GPIO > -1) pwm_set_chan_level(PWMA_L_SLICE, PWMA_L_CHAN, level);
+static inline void PWMA_process(Q28 audio_l, Q28 audio_r) {
+  int32_t level_l = (audio_l >> 18) + (PWMA_CYCLE / 2);
+  int32_t level_r = (audio_r >> 18) + (PWMA_CYCLE / 2);
+  uint16_t out_l = (level_l > 0) * level_l;
+  uint16_t out_r = (level_r > 0) * level_r;
+  if(PWMA_L_GPIO > -1) pwm_set_chan_level(PWMA_L_SLICE, PWMA_L_CHAN, out_l);
+  if(PWMA_R_GPIO > -1) pwm_set_chan_level(PWMA_R_SLICE, PWMA_R_CHAN, out_r);
 }
 
 //////// Interrupt handler and main functions ////////////
@@ -240,25 +242,39 @@ static volatile uint8_t pitch_voice[4]; // pitch control value (per voice)
 static volatile int8_t Octave_shift; // key octave shift amount
 
 
-//////// filter (dual-peak) ///////////////////////////
-BiquadBPF BPF_voice1[4]; // first peak per voice
-BiquadBPF BPF_voice2[4]; // second peak per voice
+//////// Vowel formant filter ///////////////////////////
+// Three biquad bandpass filters per voice (F1 + F2 + F3 formants)
+static BiquadBPF BPF_voice1[4]; // first formant per voice
+static BiquadBPF BPF_voice2[4]; // second formant per voice
+static BiquadBPF BPF_voice3[4]; // third formant per voice
 
+static volatile vowel_t CurrentVowel = VOWEL_NONE;
+static volatile vowel_t TargetVowel  = VOWEL_NONE;
 
-
-static volatile vowel_t CurrentVowel = VOWEL_E;  // always "A"
-// Approximate second peak offsets for vowels (tweakable)
-static const int8_t VowelPeakOffsets[5] = {
-    12, // A
-    22, // E
-    28, // I
-    18, // O
-    25  // U
+// Vowel formant table indices into BPF_sweep[128]
+// Derived from standard male vowel formant frequencies at Fs=44100:
+//   Table spans ~91 Hz (idx 0) to ~4567 Hz (idx 127), log-spaced
+//   A: F1=800Hz->70,  F2=1200Hz->84,  F3=2600Hz->109
+//   E: F1=400Hz->48,  F2=2200Hz->103, F3=2900Hz->112
+//   I: F1=300Hz->39,  F2=2600Hz->109, F3=3200Hz->116
+//   O: F1=500Hz->55,  F2=900Hz->74,   F3=2500Hz->108
+//   U: F1=300Hz->39,  F2=800Hz->70,   F3=2300Hz->105
+typedef struct { uint8_t f1_idx; uint8_t f2_idx; uint8_t f3_idx; } VowelFormants;
+static const VowelFormants VowelTable[5] = {
+    { 70, 84,  109 },  // VOWEL_A
+    { 48, 103, 112 },  // VOWEL_E
+    { 39, 109, 116 },  // VOWEL_I
+    { 55, 74,  108 },  // VOWEL_O
+    { 39, 70,  105 },  // VOWEL_U
 };
 
+// Smoothed formant indices (Q8 fixed-point for interpolation)
+static volatile int32_t smooth_f1_q8[4];
+static volatile int32_t smooth_f2_q8[4];
+static volatile int32_t smooth_f3_q8[4];
 
 void set_vowel(vowel_t vowel) {
-    CurrentVowel = vowel;
+    TargetVowel = vowel;
 }
 
 static inline Q28 process_voice(uint8_t id) {
@@ -269,13 +285,50 @@ static inline Q28 process_voice(uint8_t id) {
     // Oscillator
     Q28 osc_out = Osc_process(id, pitch_voice[id] << 8, lfo_out);
 
-    // ---- LOWPASS FILTER (original) ----
-    Q28 lp_out = Filter_process(id, osc_out, lfo_out);
+    Q28 filtered;
+
+    if (TargetVowel == VOWEL_NONE) {
+        // No vowel filter: use the original lowpass
+        filtered = Filter_process(id, osc_out, lfo_out);
+    } else {
+        // Vowel formant filter: three parallel bandpass filters
+        // Smoothly interpolate formant indices toward target (prevents clicks)
+        int32_t targ_f1 = (int32_t)VowelTable[TargetVowel].f1_idx << 8;
+        int32_t targ_f2 = (int32_t)VowelTable[TargetVowel].f2_idx << 8;
+        int32_t targ_f3 = (int32_t)VowelTable[TargetVowel].f3_idx << 8;
+
+        // Initialise on first use or vowel change
+        if (CurrentVowel != TargetVowel && id == 0) {
+            CurrentVowel = TargetVowel;
+        }
+
+        // Smooth toward target (~8 ms time constant at 50ms main loop / per-sample)
+        smooth_f1_q8[id] += (targ_f1 - smooth_f1_q8[id]) >> 6;
+        smooth_f2_q8[id] += (targ_f2 - smooth_f2_q8[id]) >> 6;
+        smooth_f3_q8[id] += (targ_f3 - smooth_f3_q8[id]) >> 6;
+
+        int table_idx1 = smooth_f1_q8[id] >> 8;
+        int table_idx2 = smooth_f2_q8[id] >> 8;
+        int table_idx3 = smooth_f3_q8[id] >> 8;
+
+        BPF_set_from_table(&BPF_voice1[id], table_idx1);
+        BPF_set_from_table(&BPF_voice2[id], table_idx2);
+        BPF_set_from_table(&BPF_voice3[id], table_idx3);
+
+        // Run all three formant filters in parallel and mix
+        // F1 loudest (fundamental vowel body), F2 mid, F3 adds brightness/presence
+        // Scale up to compensate for bandpass attenuation
+        Q28 f1_out = BPF_process(&BPF_voice1[id], osc_out);
+        Q28 f2_out = BPF_process(&BPF_voice2[id], osc_out);
+        Q28 f3_out = BPF_process(&BPF_voice3[id], osc_out);
+
+        filtered = (f1_out >> 1) + (f2_out >> 2) + (f3_out >> 2);
+        // 2x boost to recover bandpass volume loss
+        filtered = filtered << 1;
+    }
 
     // Amplifier
-    Q28 amp_out = Amp_process(id, lp_out, eg_out);
-
-    return amp_out;
+    return Amp_process(id, filtered, eg_out);
 }
 
 
@@ -288,8 +341,14 @@ static void pwm_irq_handler() {
   voice_out[1] = process_voice(1);
   voice_out[2] = process_voice(2);
   voice_out[3] = process_voice(3);
-  PWMA_process((voice_out[0] + voice_out[1] +
-                voice_out[2] + voice_out[3]) >> 2);
+
+  // Spread voices across stereo field:
+  // Voice 0: hard left, Voice 1: centre-left
+  // Voice 2: centre-right, Voice 3: hard right
+  // Each channel is normalised to >>2 to match the old mono mix level
+  Q28 mix_l = (voice_out[0] + (voice_out[1] >> 1) + (voice_out[2] >> 2) + (voice_out[3] >> 3)) >> 2;
+  Q28 mix_r = ((voice_out[0] >> 3) + (voice_out[1] >> 2) + (voice_out[2] >> 1) + voice_out[3]) >> 2;
+  PWMA_process(mix_l, mix_r);
 
   uint16_t end_time = pwm_get_counter(PWMA_L_SLICE);
   proc_time = end_time - start_time; // simplify calculation
