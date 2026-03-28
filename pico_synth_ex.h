@@ -129,6 +129,7 @@ static inline void PWMA_process(Q28 audio_l, Q28 audio_r);
 static inline Q28 process_voice(uint8_t id);
 static void pwm_irq_handler();
 void set_vowel(vowel_t vowel);
+void set_vowel_morph(float morph);  // 0.0=A, 1.0=E, 2.0=I, 3.0=O, 4.0=U
 void note_toggle(uint8_t key);
 void all_notes_off();
 void note_on(uint8_t key);
